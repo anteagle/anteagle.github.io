@@ -335,6 +335,8 @@
     .follow-file-warning p { margin: 0; font-weight: 700; font-size: .93rem; }
     .sync-row { display: inline-flex; align-items: center; gap: 8px; color: var(--muted); font-weight: 800; font-size: .86rem; flex-wrap: wrap; }
     .sync-row .btn { min-height: 40px; padding: 8px 13px; }
+    .sync-row #follow-sync-label { font-weight: 900; color: var(--ink); white-space: nowrap; }
+    .sync-row .sync-saved { font-size: .78rem; font-weight: 700; }
     .follow-score-card { display: none; margin: 0 18px 18px; padding: 20px 22px; border-radius: 20px; background: var(--sun-soft); }
     .follow-score-card.show { display: block; }
     .follow-score-top { display: flex; align-items: center; gap: 22px; flex-wrap: wrap; }
@@ -772,7 +774,11 @@
             <span>Bars out of time with the video?</span>
             <button class="btn btn-ghost" id="follow-sync-earlier" type="button">Bars earlier</button>
             <button class="btn btn-ghost" id="follow-sync-later" type="button">Bars later</button>
-            <span id="follow-sync-label">Sync: spot on</span>
+            <button class="btn btn-ghost" id="follow-sync-earlier-fine" type="button" aria-label="Move bars 0.1 seconds earlier">Earlier 0.1s</button>
+            <button class="btn btn-ghost" id="follow-sync-later-fine" type="button" aria-label="Move bars 0.1 seconds later">Later 0.1s</button>
+            <span id="follow-sync-label">Sync: 0.0s</span>
+            <button class="btn btn-ghost" id="follow-sync-reset" type="button">Reset</button>
+            <span class="sync-saved">Saved for this song on this device</span>
           </div>
         </div>
         <div class="follow-mic-picker">
@@ -2214,6 +2220,28 @@
     var followSongKey = "kids";
     var followSongDef = FOLLOW_SONGS.kids;
 
+    /* Per-song bar-sync offsets. Each song's video has its own small
+       timing offset (the kids' “You Raise Me Up” bars run early while
+       “Let It Go” runs late), so the nudge is stored per song — not
+       globally — in this browser, and re-applied the next time that
+       song is opened here. Nothing else is stored. */
+    function followSyncStorageKey(songKey) { return "learnToSing.followSync." + songKey; }
+    function normalizeFollowSync(value) {
+      var n = Number(value);
+      if (!isFinite(n)) return 0;
+      n = Math.round(n * 10) / 10;
+      return Math.max(-5, Math.min(5, n));
+    }
+    function loadFollowSyncOffset(songKey) {
+      try {
+        var raw = window.localStorage.getItem(followSyncStorageKey(songKey));
+        return raw === null ? 0 : normalizeFollowSync(raw);
+      } catch (e) { return 0; }
+    }
+    function saveFollowSyncOffset(songKey, value) {
+      try { window.localStorage.setItem(followSyncStorageKey(songKey), String(normalizeFollowSync(value))); } catch (e) {}
+    }
+
     function setFollowSong(key) {
       var def = FOLLOW_SONGS[key];
       if (!def || key === followSongKey) { if (def) return; return; }
@@ -2227,8 +2255,8 @@
       buildFollowNotes();
       FOLLOW_TOTAL_SEC = FOLLOW_LINE_TIMES[FOLLOW_LINE_TIMES.length - 1][0] + FOLLOW_LINE_TIMES[FOLLOW_LINE_TIMES.length - 1][1];
       followResults = null; followTrail = []; followNoteStats = []; followLastNote = -1; followLastLine = -1; followLastPhase = "";
-      followSyncOffset = 0; followFallbackT = 0; followMicUnavailable = false; followAutoFallback = false; followMicErrorMessage = ""; followVideoDead = false; followStuckReloads = 0; followPlayerError = null;
-      var syncLabel = document.getElementById("follow-sync-label"); if (syncLabel) syncLabel.textContent = "Sync: spot on";
+      followSyncOffset = loadFollowSyncOffset(key); followFallbackT = 0; followMicUnavailable = false; followAutoFallback = false; followMicErrorMessage = ""; followVideoDead = false; followStuckReloads = 0; followPlayerError = null;
+      if (typeof renderSyncLabel === "function") renderSyncLabel();
       document.getElementById("follow-heading").textContent = def.heading;
       document.getElementById("follow-desc").innerHTML = def.desc;
       document.getElementById("follow-video-title").textContent = def.videoTitle;
@@ -2251,7 +2279,7 @@
     var followPlayer = null;     /* the embedded performance video */
     var followPlayerReady = false;
     var followVideoPending = null; /* withMic flag waiting for the player */
-    var followSyncOffset = 0;    /* seconds; parent-adjustable bar nudge */
+    var followSyncOffset = loadFollowSyncOffset(followSongKey); /* seconds; this song's saved bar nudge */
     var followFallbackT = 0;     /* song seconds when the video can't play */
     var followLastTickAt = 0;
     var followRaf = null;
@@ -3257,10 +3285,23 @@
       });
     });
     function renderSyncLabel() {
-      $("follow-sync-label").textContent = followSyncOffset === 0 ? "Sync: spot on" : "Sync: bars " + (followSyncOffset > 0 ? followSyncOffset.toFixed(1) + "s earlier" : Math.abs(followSyncOffset).toFixed(1) + "s later");
+      var el = $("follow-sync-label");
+      if (!el) return;
+      var n = normalizeFollowSync(followSyncOffset);
+      var signed = (n > 0 ? "+" : "") + n.toFixed(1) + "s";
+      el.textContent = n === 0 ? "Sync: 0.0s · spot on" : "Sync: " + signed + (n > 0 ? " · bars earlier" : " · bars later");
     }
-    $("follow-sync-earlier").addEventListener("click", function() { followSyncOffset = Math.min(5, followSyncOffset + 0.5); renderSyncLabel(); });
-    $("follow-sync-later").addEventListener("click", function() { followSyncOffset = Math.max(-5, followSyncOffset - 0.5); renderSyncLabel(); });
+    function adjustFollowSync(delta) {
+      followSyncOffset = normalizeFollowSync(followSyncOffset + delta);
+      saveFollowSyncOffset(followSongKey, followSyncOffset);
+      renderSyncLabel();
+    }
+    $("follow-sync-earlier").addEventListener("click", function() { adjustFollowSync(0.5); });
+    $("follow-sync-later").addEventListener("click", function() { adjustFollowSync(-0.5); });
+    $("follow-sync-earlier-fine").addEventListener("click", function() { adjustFollowSync(0.1); });
+    $("follow-sync-later-fine").addEventListener("click", function() { adjustFollowSync(-0.1); });
+    $("follow-sync-reset").addEventListener("click", function() { followSyncOffset = 0; saveFollowSyncOffset(followSongKey, 0); renderSyncLabel(); });
+    renderSyncLabel();
     document.querySelectorAll(".follow-song-option").forEach(function(btn) { btn.addEventListener("click", function() { setFollowSong(btn.dataset.followSong); }); });
     renderFollowLyrics(0, -1);
     if (location.protocol === "file:") { var fw = document.getElementById("follow-file-warning"); if (fw) fw.classList.add("show"); }
